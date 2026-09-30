@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CheckSquare, FileText, ScrollText, Users } from "lucide-react";
+import { CheckSquare, FileText, ScrollText, Settings, Users } from "lucide-react";
 
 export function SidebarNav({ workspaceId, showMembers }: { workspaceId: string; showMembers: boolean }) {
   const pathname = usePathname();
@@ -13,6 +13,7 @@ export function SidebarNav({ workspaceId, showMembers }: { workspaceId: string; 
     { href: `${base}/tasks`, label: "Tasks", icon: CheckSquare },
     { href: `${base}/tool-logs`, label: "Tool Logs", icon: ScrollText },
     ...(showMembers ? [{ href: `${base}/members`, label: "Members", icon: Users }] : []),
+    { href: `${base}/settings`, label: "Settings", icon: Settings },
   ];
 
   return (

@@ -9,7 +9,7 @@ Two kinds of accounts:
 - **Personal:** just you, with as many private workspaces as you like.
 - **Organization:** shared workspaces for a team. Members can access every workspace in the organization.
 
-> Status: authentication, accounts, onboarding and the workspace shell are done. Document ingestion, RAG chat and tool calling come next (see [CLAUDE.md](CLAUDE.md) → Status).
+> Status: accounts, workspaces, document ingestion and grounded chat with citations are done. Tool calling comes next (see [CLAUDE.md](CLAUDE.md) → Status).
 
 ## Tech stack
 
@@ -32,6 +32,9 @@ npm run dev                  # http://localhost:3000
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Project Settings → API → Project URL |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → **Publishable key** (or the legacy `anon` key) |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` locally; your production URL on Vercel |
+| `GEMINI_API_KEY` | [Google AI Studio → API keys](https://aistudio.google.com/apikey) (free, no card). Server-only. |
+
+Optional: `GEMINI_CHAT_MODELS` (comma-separated fallback chain), `GEMINI_EMBEDDING_MODEL`, `RAG_MIN_SIMILARITY`. The defaults are in `.env.example`.
 
 The publishable key is designed to be public. Every table is protected by Row-Level Security, and the app never uses a service-role/secret key.
 
@@ -39,7 +42,10 @@ The publishable key is designed to be public. Every table is protected by Row-Le
 
 ### 1. Create the database schema
 
-In the Supabase dashboard, open **SQL Editor → New query**. Paste the contents of [`supabase/migrations/20260930000000_accounts_and_workspaces.sql`](supabase/migrations/20260930000000_accounts_and_workspaces.sql) and click **Run**.
+In the Supabase dashboard, open **SQL Editor → New query**. Run each file in [`supabase/migrations/`](supabase/migrations/) **in order**. Paste its contents and click **Run**, one query per file:
+
+1. `20260930000000_accounts_and_workspaces.sql`: accounts, members, workspaces
+2. `20261001000000_documents_and_chat.sql`: pgvector, documents, chunks, chat messages, `match_document_chunks()`
 
 (Alternatively, with the Supabase CLI: `supabase link --project-ref <ref>` then `supabase db push`.)
 
@@ -95,10 +101,38 @@ No credit card is required at any step.
 - Every workspace page loads the workspace through the user's own Supabase client. RLS returns nothing for workspaces you don't belong to, and the app responds with a 404.
 - Personal accounts can never gain a second member. A database trigger enforces this, not just the UI.
 
+## How documents and chat work
+
+```
+Upload (PDF / Markdown / TXT, ≤ 4 MB)
+  → sha256 of the bytes: same file already in this workspace? → "already uploaded", nothing duplicated
+  → parse (PDF text per page · Markdown heading path · plain text)
+  → chunk (~2,000 chars, ~300 overlap; never spans two PDF pages)
+  → embed with gemini-embedding-001 (768 dims)
+  → one shared table `document_chunks`, every row tagged with workspace_id
+
+Question
+  → saved to chat_messages first (never lost), plus a "pending" answer row
+  → embed question → match_document_chunks(workspace_id, …): filter INSIDE the vector query, runs under RLS
+  → best similarity < 0.60 → "I don't know" without calling the LLM
+  → otherwise the top chunks go to Gemini as numbered, delimited <source> blocks, and it must cite [n]
+    or say "I don't know"; document text is treated as data, never instructions
+  → answer + citations (document, page/section, snippet) + retrieval scores saved; failures are retryable
+```
+
+## Tests
+
+```bash
+npm test          # unit tests + database isolation tests (in-memory Postgres with the real migrations)
+npm run test:ai   # live end-to-end RAG test against Gemini (needs GEMINI_API_KEY; rate-limited)
+```
+
+The isolation tests put a secret in one workspace and verify that no query from another workspace can retrieve it, even with a perfect vector match or a forged workspace id.
+
 ## Deploying (Vercel)
 
 1. Push this repo to GitHub, then **Import** it in Vercel (Hobby plan, free).
-2. Add the three environment variables. Set `NEXT_PUBLIC_SITE_URL` to your Vercel URL.
+2. Add the environment variables, including `GEMINI_API_KEY`. Set `NEXT_PUBLIC_SITE_URL` to your Vercel URL.
 3. Add the Vercel URL to Supabase's redirect URLs and to Google's authorized JavaScript origins (steps 2 and 4 above).
 
 ## Project docs

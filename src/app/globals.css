@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* Dossify brand tokens (see CLAUDE.md → Brand). Use these, never raw hex values in components. */
+@theme {
+  --color-primary: #6c3df5;
+  --color-primary-hover: #5a2ee0;
+  --color-secondary: #8b6bff;
+  --color-accent: #22d3ee;
+  --color-ink: #0f172a;
+  --color-canvas: #f5f7ff;
+  --color-muted: #64748b;
+  --color-line: #e4e7f2;
+  --color-lavender: #eeeafe;
+  --color-danger: #dc2626;
+  --color-success: #059669;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -12px rgb(76 45 200 / 0.18);
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+/* Soft brand glow used on hero / brand panels. */
+.brand-glow {
+  background:
+    radial-gradient(60% 50% at 20% 10%, rgb(108 61 245 / 0.45), transparent 70%),
+    radial-gradient(50% 45% at 90% 85%, rgb(59 130 246 / 0.35), transparent 70%),
+    radial-gradient(40% 35% at 70% 30%, rgb(34 211 238 / 0.12), transparent 70%),
+    var(--color-ink);
+}

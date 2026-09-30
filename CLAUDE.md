@@ -152,4 +152,5 @@ Logos: `public/brand/dossify-icon.png` (mark) and `public/brand/dossify-logo.png
 - [x] Dashboard data (documents, chat sessions, tasks, tool logs)
 - [x] Stretch: streaming answers
 - [ ] Stretch: retrieval debug view, hybrid search, observability
-- [ ] Seed script, README test instructions, AI_NOTES.md
+- [x] AI_NOTES.md
+- [ ] Seed script, README test instructions

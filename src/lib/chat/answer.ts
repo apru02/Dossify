@@ -20,6 +20,7 @@ export async function answerQuestion(
   args: {
     workspaceId: string;
     workspaceName: string;
+    sessionId: string; // conversation history comes from this session only; documents are workspace-wide
     assistantId: string;
     question: string;
     questionCreatedAt: string; // history = messages before the question (also correct on retry)
@@ -59,7 +60,7 @@ export async function answerQuestion(
     const { data: prior } = await supabase
       .from("chat_messages")
       .select("role, content")
-      .eq("workspace_id", args.workspaceId)
+      .eq("session_id", args.sessionId)
       .eq("status", "complete")
       .lt("created_at", args.questionCreatedAt)
       .order("created_at", { ascending: false })

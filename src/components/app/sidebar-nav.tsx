@@ -3,13 +3,12 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CheckSquare, FileText, MessageSquare, ScrollText, Users } from "lucide-react";
+import { CheckSquare, FileText, ScrollText, Users } from "lucide-react";
 
 export function SidebarNav({ workspaceId, showMembers }: { workspaceId: string; showMembers: boolean }) {
   const pathname = usePathname();
   const base = `/w/${workspaceId}`;
   const items = [
-    { href: base, label: "Chat", icon: MessageSquare },
     { href: `${base}/documents`, label: "Documents", icon: FileText },
     { href: `${base}/tasks`, label: "Tasks", icon: CheckSquare },
     { href: `${base}/tool-logs`, label: "Tool Logs", icon: ScrollText },
@@ -19,7 +18,7 @@ export function SidebarNav({ workspaceId, showMembers }: { workspaceId: string; 
   return (
     <nav className="space-y-1" aria-label="Workspace">
       {items.map(({ href, label, icon: Icon }) => {
-        const active = href === base ? pathname === base : pathname.startsWith(href);
+        const active = pathname.startsWith(href);
         return (
           <Link
             key={href}

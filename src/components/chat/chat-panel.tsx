@@ -2,11 +2,12 @@
 
 import clsx from "clsx";
 import Link from "next/link";
-import { AlertTriangle, FileSearch, FileText, Lightbulb, Loader2, RotateCcw, SendHorizontal } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, FileSearch, FileText, Lightbulb, Loader2, MessageSquarePlus, RotateCcw, SendHorizontal } from "lucide-react";
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { askQuestion, retryAnswer } from "@/app/w/[workspaceId]/chat-actions";
 import { LogoMark } from "@/components/brand/logo";
-import type { ChatMessage } from "@/lib/data/chat";
+import type { ChatMessage, ChatSession } from "@/lib/data/chat";
 import { AnswerMarkdown } from "./answer-markdown";
 
 const SUGGESTIONS = [
@@ -14,14 +15,21 @@ const SUGGESTIONS = [
   { icon: Lightbulb, label: "Find key insights", prompt: "What are the most important facts or decisions in these documents?" },
 ];
 
-type Props = { workspaceId: string; workspaceName: string; messages: ChatMessage[]; readyDocuments: number };
+type Props = {
+  workspaceId: string;
+  workspaceName: string;
+  session: ChatSession | null; // null = new chat; the first question creates the session
+  messages: ChatMessage[];
+  readyDocuments: number;
+};
 
 function tempMessage(role: ChatMessage["role"], content: string, status: ChatMessage["status"]): ChatMessage {
   const now = new Date().toISOString();
   return { id: `temp-${role}-${now}`, role, content, status, error: null, replyTo: null, citations: [], model: null, latencyMs: null, createdAt: now, updatedAt: now };
 }
 
-export function ChatPanel({ workspaceId, workspaceName, messages, readyDocuments }: Props) {
+export function ChatPanel({ workspaceId, workspaceName, session, messages, readyDocuments }: Props) {
+  const router = useRouter();
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, startSending] = useTransition();
@@ -44,10 +52,17 @@ export function ChatPanel({ workspaceId, workspaceName, messages, readyDocuments
     setError(null);
     startSending(async () => {
       addOptimistic(question);
-      const res = await askQuestion({ workspaceId, question }).catch(() => ({
+      const res = await askQuestion({ workspaceId, sessionId: session?.id ?? null, question }).catch(() => ({
         ok: false,
         error: "Network error. Your message may not have been sent.",
+        sessionId: undefined,
       }));
+      // First question of a new chat: move to the session's URL (inside the transition, so the
+      // optimistic messages stay on screen until the session page has rendered).
+      if (!session && res.sessionId) {
+        router.push(`/w/${workspaceId}/c/${res.sessionId}`);
+        return;
+      }
       if (!res.ok) {
         setError(res.error ?? "Something went wrong.");
         setInput(question);
@@ -66,11 +81,22 @@ export function ChatPanel({ workspaceId, workspaceName, messages, readyDocuments
 
   return (
     <div className="flex h-[calc(100dvh-3.5rem)] flex-col md:h-dvh">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line bg-white/60 px-4 backdrop-blur sm:px-6">
+        <h1 className="min-w-0 truncate text-sm font-semibold">{session?.title ?? "New chat"}</h1>
+        {session && (
+          <Link
+            href={`/w/${workspaceId}`}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-lavender"
+          >
+            <MessageSquarePlus className="size-4" aria-hidden /> New chat
+          </Link>
+        )}
+      </header>
       <div className="flex-1 overflow-y-auto">
         {optimistic.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center px-6 py-16 text-center">
             <LogoMark size={56} />
-            <h1 className="mt-5 text-3xl font-bold tracking-tight">Hi there!</h1>
+            <h2 className="mt-5 text-3xl font-bold tracking-tight">Hi there!</h2>
             <p className="mt-2 max-w-md text-sm text-muted">
               Ask questions, get insights, and take action on the documents in{" "}
               <span className="font-semibold text-ink">{workspaceName}</span>.

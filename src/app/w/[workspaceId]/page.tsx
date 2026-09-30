@@ -2,8 +2,8 @@ import { ChatPanel } from "@/components/chat/chat-panel";
 import { countReadyDocuments } from "@/lib/data/documents";
 import { getWorkspace } from "@/lib/data/workspaces";
 
-// "New chat": the session is created by askQuestion when the first question is sent.
-// Answers are generated inside that Server Action, hence the longer limit.
+// "New chat": the session is created by POST /api/chat when the first question is sent.
+// (Answers stream from that route; this page only renders the empty state.)
 export const maxDuration = 60;
 
 export default async function NewChatPage({ params }: PageProps<"/w/[workspaceId]">) {

@@ -1,17 +1,42 @@
 import "server-only";
 import type { Content } from "@google/genai";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { buildCitations, isNoAnswer, removeInvalidCitations } from "@/lib/rag/citations";
+import { buildCitations, isNoAnswer, removeInvalidCitations, type Citation } from "@/lib/rag/citations";
 import { NO_ANSWER, historyText, systemPrompt, userTurn } from "@/lib/rag/prompt";
 import { retrieveChunks } from "@/lib/rag/retrieve";
 import { MIN_BEST_SIMILARITY, selectContext } from "@/lib/rag/select";
 import { TOOLS_BY_NAME, mightUseTools } from "@/lib/tools/registry";
 import { supabaseToolServices } from "@/lib/tools/services";
+import type { ToolActivity } from "@/lib/tools/types";
 import { runTurn } from "./run-turn";
 
 const HISTORY_MESSAGES = 6; // last 3 exchanges, for follow-up questions
 
 type HistoryRow = { role: "user" | "assistant"; content: string };
+
+// Live progress for streaming clients (all optional).
+export type AnswerEvents = {
+  onStatus?: (text: string) => void;
+  onText?: (delta: string) => void;
+  onTool?: (activity: ToolActivity) => void;
+};
+
+// What was saved on the assistant message; streamed to the client as the final "done" event.
+export type FinalAnswer = {
+  status: "complete" | "error";
+  content: string;
+  error: string | null;
+  citations: Citation[];
+  tools: ToolActivity[];
+  model: string | null;
+  latencyMs: number;
+};
+
+const TOOL_STATUS: Record<string, string> = {
+  save_task: "Saving a task…",
+  list_tasks: "Looking up tasks…",
+  send_summary: "Posting to Slack…",
+};
 
 /**
  * Fill in a pending assistant message. Never throws: on failure the row is marked `error`
@@ -28,17 +53,37 @@ export async function answerQuestion(
     question: string;
     questionCreatedAt: string; // history = messages before the question (also correct on retry)
   },
-): Promise<void> {
+  events: AnswerEvents = {},
+): Promise<FinalAnswer> {
   const started = Date.now();
-  const finish = async (patch: Record<string, unknown>) => {
+  let activities: ToolActivity[] = [];
+  const finish = async (patch: {
+    status: FinalAnswer["status"];
+    content?: string;
+    error?: string | null;
+    citations?: Citation[];
+    model?: string | null;
+    [key: string]: unknown;
+  }): Promise<FinalAnswer> => {
+    const latencyMs = Date.now() - started;
     const { error } = await supabase
       .from("chat_messages")
-      .update({ ...patch, latency_ms: Date.now() - started })
+      .update({ ...patch, latency_ms: latencyMs })
       .eq("id", args.assistantId);
     if (error) console.error("saving answer failed", error.code, error.message);
+    return {
+      status: patch.status,
+      content: patch.content ?? "",
+      error: patch.error ?? null,
+      citations: patch.citations ?? [],
+      tools: activities,
+      model: patch.model ?? null,
+      latencyMs,
+    };
   };
 
   try {
+    events.onStatus?.(`Searching ${args.workspaceName}…`);
     const retrieved = await retrieveChunks(supabase, args.workspaceId, args.question);
     const { context, best } = selectContext(retrieved);
     const retrieval = {
@@ -57,8 +102,7 @@ export async function answerQuestion(
     // Honest refusal without spending an LLM call: nothing relevant was found and the message
     // doesn't look like a request a tool could handle.
     if (context.length === 0 && !mightUseTools(args.question)) {
-      await finish({ status: "complete", content: NO_ANSWER, citations: [], retrieval, error: null });
-      return;
+      return await finish({ status: "complete", content: NO_ANSWER, citations: [], retrieval, error: null });
     }
 
     const { data: prior } = await supabase
@@ -98,7 +142,18 @@ export async function answerQuestion(
       if (tool?.requiresIntent) calls.set(tool_name, tool.maxPerTurn);
     }
 
+    events.onStatus?.(context.length ? "Writing an answer…" : "Working on it…");
     const turn = await runTurn({
+      // Stream text only when it's grounded in sources. Without sources the reply may be replaced
+      // by a refusal, so the client just gets tool events and the final answer.
+      events: {
+        onText: events.onText && context.length ? events.onText : undefined,
+        onToolStart: (name) => events.onStatus?.(TOOL_STATUS[name] ?? "Running a tool…"),
+        onTool: (a) => {
+          activities = [...activities, a];
+          events.onTool?.(a);
+        },
+      },
       systemInstruction: systemPrompt(args.workspaceName),
       history,
       userText: userTurn(args.question, context),
@@ -115,6 +170,7 @@ export async function answerQuestion(
       },
     });
 
+    activities = turn.activities;
     const toolsSucceeded = turn.activities.some((a) => a.status === "ok");
     let answer = turn.text;
     if (!answer) {
@@ -128,7 +184,7 @@ export async function answerQuestion(
       answer = isNoAnswer(answer) && !toolsSucceeded ? NO_ANSWER : removeInvalidCitations(answer, context.length);
     }
 
-    await finish({
+    return await finish({
       status: "complete",
       content: answer,
       citations: context.length ? buildCitations(answer, context) : [],
@@ -142,7 +198,7 @@ export async function answerQuestion(
     const e = err as { status?: number; code?: string; message?: string };
     console.error("answerQuestion failed", { status: e.status, code: e.code, message: e.message?.slice(0, 300) });
     const busy = e.status === 429 || e.status === 503;
-    await finish({
+    return await finish({
       status: "error",
       error: busy
         ? "The AI service is busy right now. Your question is saved. Try again in a moment."

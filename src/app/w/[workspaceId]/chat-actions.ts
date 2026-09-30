@@ -4,91 +4,16 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { displayName, requireUser } from "@/lib/auth";
 import { answerQuestion } from "@/lib/chat/answer";
-import { STALE_PENDING_MS, getSession, titleFromQuestion } from "@/lib/data/chat";
+import { STALE_PENDING_MS } from "@/lib/data/chat";
 import { getWorkspace } from "@/lib/data/workspaces";
 import { createClient } from "@/lib/supabase/server";
 
 export type ChatActionResult = { ok: boolean; error?: string; sessionId?: string };
 
-const askSchema = z.object({
-  workspaceId: z.uuid(),
-  sessionId: z.uuid().nullable(),
-  question: z.string().trim().min(1, "Type a question").max(2000, "Keep questions under 2,000 characters"),
-});
-
 // Refreshes the chat page AND the layout (sidebar list of sessions).
 const refresh = (workspaceId: string) => revalidatePath(`/w/${workspaceId}`, "layout");
 
-export async function askQuestion(input: {
-  workspaceId: string;
-  sessionId: string | null; // null = start a new chat with this question
-  question: string;
-}): Promise<ChatActionResult> {
-  const user = await requireUser();
-  const parsed = askSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-  const { question } = parsed.data;
-
-  // RLS-scoped loads: ids from the browser are only lookup keys.
-  const workspace = await getWorkspace(parsed.data.workspaceId);
-  if (!workspace) return { ok: false, error: "Workspace not found." };
-
-  const supabase = await createClient();
-
-  let sessionId = parsed.data.sessionId;
-  if (sessionId) {
-    if (!(await getSession(workspace.id, sessionId))) return { ok: false, error: "Chat not found." };
-  } else {
-    // Sessions are created lazily on the first question, so "New chat" never leaves empty sessions.
-    const { data, error } = await supabase
-      .from("chat_sessions")
-      .insert({ workspace_id: workspace.id, title: titleFromQuestion(question) })
-      .select("id")
-      .single<{ id: string }>();
-    if (error) {
-      console.error("creating chat session failed", error.code, error.message);
-      return { ok: false, error: "Couldn't start a new chat. Please try again." };
-    }
-    sessionId = data.id;
-  }
-
-  // 1. Persist the question BEFORE calling any AI service, so it's never lost.
-  const { data: saved, error: qError } = await supabase
-    .from("chat_messages")
-    .insert({ workspace_id: workspace.id, session_id: sessionId, role: "user", content: question })
-    .select("id, created_at")
-    .single<{ id: string; created_at: string }>();
-  if (qError) {
-    console.error("saving question failed", qError.code, qError.message);
-    return { ok: false, error: "Couldn't send your message. Please try again.", sessionId };
-  }
-
-  const { data: pending, error: pError } = await supabase
-    .from("chat_messages")
-    .insert({ workspace_id: workspace.id, session_id: sessionId, role: "assistant", status: "pending", reply_to: saved.id })
-    .select("id")
-    .single<{ id: string }>();
-  if (pError) {
-    console.error("creating answer placeholder failed", pError.code, pError.message);
-    refresh(workspace.id);
-    return { ok: false, error: "Your question was saved, but answering failed to start. Try again.", sessionId };
-  }
-
-  // 2. Retrieve (across ALL of the workspace's documents) + generate. Failures are recorded on
-  //    the placeholder row, not thrown.
-  await answerQuestion(supabase, {
-    workspaceId: workspace.id,
-    workspaceName: workspace.name,
-    userName: displayName(user),
-    sessionId,
-    assistantId: pending.id,
-    question,
-    questionCreatedAt: saved.created_at,
-  });
-
-  refresh(workspace.id);
-  return { ok: true, sessionId };
-}
+// Asking a question is POST /api/chat (streaming). Retry, rename and delete stay Server Actions.
 
 export async function retryAnswer(input: { workspaceId: string; messageId: string }): Promise<ChatActionResult> {
   const user = await requireUser();

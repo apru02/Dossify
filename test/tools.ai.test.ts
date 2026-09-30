@@ -39,10 +39,17 @@ const source = (content: string): SourceChunk => ({
 });
 const leave = [source("Full-time employees receive 24 days of paid annual leave per calendar year. Up to five unused days may be carried over.")];
 
-async function turn(question: string, sources: SourceChunk[] = []) {
+async function turn(question: string, sources: SourceChunk[] = [], stream = false) {
   const h = harness(question);
-  const result = await runTurn({ systemInstruction: systemPrompt("Acme HR", "2026-10-01"), history: [], userText: userTurn(question, sources), tool: h.tool });
-  return { ...h, result };
+  const deltas: string[] = [];
+  const result = await runTurn({
+    systemInstruction: systemPrompt("Acme HR", "2026-10-01"),
+    history: [],
+    userText: userTurn(question, sources),
+    tool: h.tool,
+    events: stream ? { onText: (d) => deltas.push(d) } : undefined,
+  });
+  return { ...h, result, deltas };
 }
 
 describe.skipIf(!enabled)("tool calling (live Gemini)", () => {
@@ -73,6 +80,20 @@ describe.skipIf(!enabled)("tool calling (live Gemini)", () => {
     expect(slack).not.toHaveBeenCalled();
     expect(tasks).toEqual([]);
     expect(log.filter((l) => l.status === "ok")).toEqual([]);
+  }, 90_000);
+
+  it("streams a grounded answer in pieces that add up to the final text", async () => {
+    const long = [source("Full-time employees receive 24 days of paid annual leave per calendar year. Up to five unused days may be carried over into January. Requests need manager approval two weeks ahead. Part-time staff accrue leave pro rata. Unused leave beyond five days is forfeited on 1 February.")];
+    const { deltas, result } = await turn("Explain the leave policy in detail, as a bulleted list.", long, true);
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(deltas.join("").trim()).toBe(result.text);
+    expect(result.text).toMatch(/24/);
+  }, 90_000);
+
+  it("still runs tools correctly in streaming mode", async () => {
+    const { tasks, log } = await turn("Add a task to book the team offsite, then list my open tasks.", [], true);
+    expect(tasks).toHaveLength(1);
+    expect(log.map((l) => `${l.toolName}:${l.status}`)).toEqual(expect.arrayContaining(["save_task:ok", "list_tasks:ok"]));
   }, 90_000);
 
   it("answers plain questions without calling tools", async () => {

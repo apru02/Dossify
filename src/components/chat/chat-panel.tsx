@@ -16,9 +16,11 @@ import {
   SendHorizontal,
   XCircle,
 } from "lucide-react";
-import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
-import { askQuestion, retryAnswer } from "@/app/w/[workspaceId]/chat-actions";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { retryAnswer } from "@/app/w/[workspaceId]/chat-actions";
 import { LogoMark } from "@/components/brand/logo";
+import type { FinalAnswer } from "@/lib/chat/answer";
+import { readChatStream } from "@/lib/chat/stream-events";
 import type { ChatMessage, ChatSession } from "@/lib/data/chat";
 import type { ToolActivity } from "@/lib/tools/types";
 import { AnswerMarkdown } from "./answer-markdown";
@@ -36,56 +38,127 @@ type Props = {
   readyDocuments: number;
 };
 
-function tempMessage(role: ChatMessage["role"], content: string, status: ChatMessage["status"]): ChatMessage {
+// The exchange currently streaming. It's drawn after the server-rendered `messages` and hidden
+// automatically once a refresh delivers new messages (which then include the saved answer).
+type Live = {
+  base: ChatMessage[];
+  question: string;
+  assistantId: string | null;
+  text: string;
+  status: string;
+  tools: ToolActivity[];
+  final: FinalAnswer | null;
+  failed: string | null;
+};
+
+function liveMessages(live: Live): ChatMessage[] {
   const now = new Date().toISOString();
-  return { id: `temp-${role}-${now}`, role, content, status, error: null, replyTo: null, citations: [], tools: [], model: null, latencyMs: null, createdAt: now, updatedAt: now };
+  const base = { replyTo: null, citations: [], tools: [], model: null, latencyMs: null, error: null, createdAt: now, updatedAt: now };
+  const f = live.final;
+  return [
+    { ...base, id: "live-question", role: "user", content: live.question, status: "complete" },
+    {
+      ...base,
+      id: live.assistantId ?? "live-answer",
+      role: "assistant",
+      content: f?.content ?? live.text,
+      status: f ? f.status : live.failed ? "error" : "pending",
+      error: f?.error ?? live.failed,
+      citations: f?.citations ?? [],
+      tools: f?.tools ?? live.tools,
+      model: f?.model ?? null,
+      latencyMs: f?.latencyMs ?? null,
+    },
+  ];
 }
 
 export function ChatPanel({ workspaceId, workspaceName, session, messages, readyDocuments }: Props) {
   const router = useRouter();
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [sending, startSending] = useTransition();
+  const [live, setLive] = useState<Live | null>(null);
+  const [streaming, setStreaming] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
-  const [optimistic, addOptimistic] = useOptimistic(messages, (state, question: string) => [
-    ...state,
-    tempMessage("user", question, "complete"),
-    tempMessage("assistant", "", "pending"),
-  ]);
-  const endRef = useRef<HTMLDivElement>(null);
+  const [retrying, startRetry] = useTransition();
+  const [, startRefresh] = useTransition();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
 
+  const shown = live && live.base === messages ? [...messages, ...liveMessages(live)] : messages;
+  const busy = streaming || retrying;
+
+  // Follow the answer as it streams, unless the user has scrolled up to read something.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [optimistic.length]);
+    const el = scrollRef.current;
+    if (el && stickToBottom.current) el.scrollTo({ top: el.scrollHeight });
+  }, [shown.length, live?.text.length, live?.tools.length, live?.final]);
 
-  function send(text: string) {
+  async function send(text: string) {
     const question = text.trim();
-    if (!question || sending) return;
+    if (!question || busy) return;
     setInput("");
     setError(null);
-    startSending(async () => {
-      addOptimistic(question);
-      const res = await askQuestion({ workspaceId, sessionId: session?.id ?? null, question }).catch(() => ({
-        ok: false,
-        error: "Network error. Your message may not have been sent.",
-        sessionId: undefined,
-      }));
-      // First question of a new chat: move to the session's URL (inside the transition, so the
-      // optimistic messages stay on screen until the session page has rendered).
-      if (!session && res.sessionId) {
-        router.push(`/w/${workspaceId}/c/${res.sessionId}`);
+    setStreaming(true);
+    stickToBottom.current = true;
+    setLive({ base: messages, question, assistantId: null, text: "", status: `Searching ${workspaceName}…`, tools: [], final: null, failed: null });
+
+    let sessionId = session?.id ?? null;
+    let newSession = false;
+    let accepted = false;
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, sessionId, question }),
+      });
+      if (!res.ok || !res.body) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? "Couldn't send your message. Please try again.");
+      }
+      accepted = true;
+      for await (const event of readChatStream(res.body)) {
+        if (event.type === "start") {
+          sessionId = event.sessionId;
+          newSession = event.newSession;
+        }
+        setLive((l) => {
+          if (!l) return l;
+          switch (event.type) {
+            case "start":
+              return { ...l, assistantId: event.assistantId };
+            case "status":
+              return { ...l, status: event.text };
+            case "delta":
+              return { ...l, text: l.text + event.text };
+            case "tool":
+              return { ...l, tools: [...l.tools, event.activity] };
+            case "done":
+              return { ...l, final: event.answer };
+          }
+        });
+      }
+    } catch (e) {
+      if (!accepted) {
+        // Nothing was saved: give the question back.
+        setLive(null);
+        setInput(question);
+        setError(e instanceof Error ? e.message : "Couldn't send your message.");
+        setStreaming(false);
         return;
       }
-      if (!res.ok) {
-        setError(res.error ?? "Something went wrong.");
-        setInput(question);
-      }
+      setLive((l) => l && { ...l, failed: "Connection lost. Your question is saved; the answer will appear when it's ready." });
+    }
+    setStreaming(false);
+    // Swap the live draft for the saved messages (and refresh the sidebar's chat list).
+    startRefresh(() => {
+      if (newSession && sessionId) router.push(`/w/${workspaceId}/c/${sessionId}`);
+      else router.refresh();
     });
   }
 
   function retry(messageId: string) {
     setRetryingId(messageId);
-    startSending(async () => {
+    startRetry(async () => {
       const res = await retryAnswer({ workspaceId, messageId }).catch(() => ({ ok: false, error: "Network error." }));
       if (!res.ok) setError(res.error ?? "Retry failed.");
       setRetryingId(null);
@@ -105,8 +178,15 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
           </Link>
         )}
       </header>
-      <div className="flex-1 overflow-y-auto">
-        {optimistic.length === 0 ? (
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+        }}
+        className="flex-1 overflow-y-auto"
+      >
+        {shown.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center px-6 py-16 text-center">
             <LogoMark size={56} />
             <h2 className="mt-5 text-3xl font-bold tracking-tight">Hi there!</h2>
@@ -138,7 +218,7 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
           </div>
         ) : (
           <div className="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6">
-            {optimistic.map((m) =>
+            {shown.map((m) =>
               m.role === "user" ? (
                 <div key={m.id} className="flex justify-end">
                   <p className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-white">
@@ -150,14 +230,13 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
                   key={m.id}
                   workspaceId={workspaceId}
                   message={m}
-                  workspaceName={workspaceName}
+                  statusText={live && m.id === (live.assistantId ?? "live-answer") ? live.status : `Searching ${workspaceName}…`}
                   retrying={retryingId === m.id}
                   onRetry={() => retry(m.id)}
-                  disabled={sending}
+                  disabled={busy}
                 />
               ),
             )}
-            <div ref={endRef} />
           </div>
         )}
       </div>
@@ -193,11 +272,11 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
             />
             <button
               type="submit"
-              disabled={sending || !input.trim()}
+              disabled={busy || !input.trim()}
               aria-label="Send"
               className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-white hover:bg-primary-hover disabled:opacity-50"
             >
-              {sending ? <Loader2 className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-muted">
@@ -212,14 +291,14 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
 function AssistantMessage({
   workspaceId,
   message: m,
-  workspaceName,
+  statusText,
   retrying,
   onRetry,
   disabled,
 }: {
   workspaceId: string;
   message: ChatMessage;
-  workspaceName: string;
+  statusText: string;
   retrying: boolean;
   onRetry: () => void;
   disabled: boolean;
@@ -230,11 +309,23 @@ function AssistantMessage({
     <div className="flex gap-3">
       <LogoMark size={28} className="mt-1 self-start" />
       <div className="min-w-0 flex-1 space-y-3">
-        {m.status === "pending" || retrying ? (
-          <p className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm text-muted shadow-card">
-            <Loader2 className="size-4 animate-spin text-primary" aria-hidden />
-            Searching {workspaceName}…
-          </p>
+        {(m.status === "pending" || retrying) && !m.content ? (
+          <>
+            {m.tools.length > 0 && <ToolActivityList workspaceId={workspaceId} tools={m.tools} />}
+            <p className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm text-muted shadow-card" aria-live="polite">
+              <Loader2 className="size-4 animate-spin text-primary" aria-hidden />
+              {retrying ? "Trying again…" : statusText}
+            </p>
+          </>
+        ) : m.status === "pending" ? (
+          // Streaming: text arrives token by token; sources and stats appear when it's done.
+          <>
+            <div className="rounded-2xl rounded-tl-md bg-white px-4 py-3 shadow-card" aria-live="polite" aria-busy="true">
+              <AnswerMarkdown content={m.content} onCite={() => {}} />
+              <span className="mt-1 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-primary align-middle" aria-hidden />
+            </div>
+            {m.tools.length > 0 && <ToolActivityList workspaceId={workspaceId} tools={m.tools} />}
+          </>
         ) : m.status === "error" ? (
           <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
             <AlertTriangle className="size-4 shrink-0" aria-hidden />

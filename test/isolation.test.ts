@@ -86,15 +86,52 @@ describe("idempotent ingestion", () => {
   });
 });
 
-describe("chat privacy", () => {
-  it("keeps each user's thread private, even from teammates", async () => {
-    await t.as(bob, "insert into chat_messages (workspace_id, role, content) values ($1,'user','private question')", [wsB]);
+describe("chat sessions", () => {
+  const newSession = (user: string, ws: string, title = "Leave questions") =>
+    t.as<{ id: string }>(user, "insert into chat_sessions (workspace_id, title) values ($1, $2) returning id", [ws, title]).then((r) => r[0].id);
+  const say = (user: string, ws: string, session: string, content: string) =>
+    t.as(user, "insert into chat_messages (workspace_id, session_id, role, content) values ($1,$2,'user',$3) returning id", [ws, session, content]);
+
+  it("keeps each user's sessions and messages private, even from teammates", async () => {
+    const s = await newSession(bob, wsB);
+    await say(bob, wsB, s, "private question");
+    expect(await t.as(carol, "select * from chat_sessions")).toEqual([]);
     expect(await t.as(carol, "select * from chat_messages")).toEqual([]);
   });
 
-  it("blocks writing chat into another workspace or as another user", async () => {
-    expect(await t.expectDenied(alice, "insert into chat_messages (workspace_id, role, content) values ($1,'user','x')", [wsB])).toMatch(/row-level security/);
-    expect(await t.expectDenied(alice, "insert into chat_messages (workspace_id, user_id, role, content) values ($1,$2,'user','x')", [wsA, bob])).toMatch(/row-level security/);
+  it("blocks sessions in another workspace or for another user", async () => {
+    expect(await t.expectDenied(alice, "insert into chat_sessions (workspace_id) values ($1)", [wsB])).toMatch(/row-level security/);
+    expect(await t.expectDenied(alice, "insert into chat_sessions (workspace_id, user_id) values ($1, $2)", [wsA, bob])).toMatch(/row-level security/);
+  });
+
+  it("blocks writing a message into someone else's session", async () => {
+    const bobs = await newSession(bob, wsB);
+    const carolWrites = await t.expectDenied(carol, "insert into chat_messages (workspace_id, session_id, role, content) values ($1,$2,'user','hijack')", [wsB, bobs]);
+    expect(carolWrites).toMatch(/foreign key|row-level security/);
+  });
+
+  it("blocks a message whose session belongs to a different workspace", async () => {
+    const [{ id: ws2 }] = await t.as<{ id: string }>(alice, "insert into workspaces (organization_id, name, created_by) select organization_id, 'Second', $1 from workspaces where id = $2 returning id", [alice, wsA]);
+    const s = await newSession(alice, wsA);
+    expect(await t.expectDenied(alice, "insert into chat_messages (workspace_id, session_id, role, content) values ($1,$2,'user','x')", [ws2, s])).toMatch(/foreign key/);
+  });
+
+  it("bumps a session's updated_at when a message arrives", async () => {
+    const s = await newSession(alice, wsA);
+    await t.db.query("update chat_sessions set updated_at = now() - interval '1 day' where id = $1", [s]);
+    await say(alice, wsA, s, "hello");
+    const [{ fresh }] = await t.as<{ fresh: boolean }>(alice, "select updated_at > now() - interval '1 minute' as fresh from chat_sessions where id = $1", [s]);
+    expect(fresh).toBe(true);
+  });
+
+  it("deleting a session deletes its messages, and other sessions are untouched", async () => {
+    const keep = await newSession(alice, wsA, "Keep");
+    const drop = await newSession(alice, wsA, "Drop");
+    await say(alice, wsA, keep, "keep me");
+    await say(alice, wsA, drop, "drop me");
+    await t.as(alice, "delete from chat_sessions where id = $1", [drop]);
+    const left = await t.as<{ content: string }>(alice, "select content from chat_messages where session_id in ($1, $2)", [keep, drop]);
+    expect(left.map((m) => m.content)).toEqual(["keep me"]);
   });
 });
 

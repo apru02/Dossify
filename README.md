@@ -9,7 +9,7 @@ Two kinds of accounts:
 - **Personal:** just you, with as many private workspaces as you like.
 - **Organization:** shared workspaces for a team. Members can access every workspace in the organization.
 
-> Status: accounts, workspaces, document ingestion, grounded chat with citations, chat sessions and tool calling (tasks + Slack) are done (see [CLAUDE.md](CLAUDE.md) → Status).
+> Status: accounts, workspaces, team invitations, document ingestion, grounded streaming chat with citations, chat sessions and tool calling (tasks + per-workspace Slack) are done (see [CLAUDE.md](CLAUDE.md) → Status).
 
 ## Tech stack
 
@@ -35,6 +35,7 @@ npm run dev                  # http://localhost:3000
 | `GEMINI_API_KEY` | [Google AI Studio → API keys](https://aistudio.google.com/apikey) (free, no card). Server-only. |
 | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` | Your Slack app's credentials (see "Slack" below). Server-only; optional. |
 | `INTEGRATIONS_ENCRYPTION_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts each workspace's Slack connection. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` | Any SMTP provider, used to email team invitations. Optional: without it, admins copy the invite link. |
 
 Optional: `GEMINI_CHAT_MODELS` (comma-separated fallback chain), `GEMINI_EMBEDDING_MODEL`, `RAG_MIN_SIMILARITY`. The defaults are in `.env.example`.
 
@@ -51,6 +52,7 @@ In the Supabase dashboard, open **SQL Editor → New query**. Run each file in [
 3. `20261002000000_chat_sessions.sql`: multiple chat sessions per workspace (existing history moves into an "Earlier chat" session)
 4. `20261003000000_tasks_and_tool_calls.sql`: tasks and the append-only tool-call log
 5. `20261004000000_workspace_integrations.sql`: per-workspace Slack connections (encrypted)
+6. `20261005000000_invitations_and_member_management.sql`: team invitations, role changes, removing/leaving
 
 (Alternatively, with the Supabase CLI: `supabase link --project-ref <ref>` then `supabase db push`.)
 
@@ -124,6 +126,37 @@ Question (in a chat session; the first question of a "New chat" creates the sess
     or say "I don't know"; document text is treated as data, never instructions
   → answer + citations (document, page/section, snippet) + retrieval scores saved; failures are retryable
 ```
+
+## Streaming
+
+Answers stream token by token from `POST /api/chat` as newline-delimited JSON events:
+- `start` (session and message ids)
+- `status` ("Searching…", "Saving a task…")
+- `delta` (text)
+- `tool` (each tool result as it happens)
+- `done` (the saved answer, with citations, tools, model and latency)
+
+Behaviour worth knowing:
+- The question is saved before streaming starts. The server finishes and saves the answer even if the browser disconnects.
+- Text streams only when the answer is grounded in matching sources. Otherwise the reply might be replaced by "I don't know", so only tool events stream.
+- The endpoint rejects cross-origin requests and requires a session.
+
+## Teams: invitations and roles
+
+Organization accounts can invite people from **Members**.
+
+**Invitations**
+- An owner or admin enters an email and a role (member or admin). Dossify emails a link, and the admin also gets a copyable link (useful when SMTP isn't set up).
+- The link is valid for 7 days. The database stores only the SHA-256 hash of the 256-bit token.
+- **Accepting requires signing in with the invited email address**, so a forwarded link alone isn't enough.
+- A new user signs up straight from the link (no account-type step) and lands in the organization's workspace. An existing user logs in and clicks **Join**.
+- Admins can **resend** an invite (new token, old link stops working, 7 more days) or **revoke** it.
+
+**Roles**
+- **Owner** can't be removed or demoted.
+- **Admins** can invite, change roles (member ↔ admin), remove members, and manage Slack and documents.
+- **Members** can use every workspace in the organization and can leave.
+- These rules are enforced by RLS policies and `accept_invitation()`, not just the UI. Personal accounts can't invite anyone.
 
 ## Tools the assistant can call
 

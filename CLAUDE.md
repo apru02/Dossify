@@ -64,6 +64,12 @@ src/
     integrations/                  Slack OAuth ("Add to Slack"), OAuth state (CSRF), encrypted per-workspace store
     crypto/secret-box.ts           AES-256-GCM seal/open with context (workspace id) as associated data
   app/api/integrations/slack/      connect (start OAuth, admins only) and callback (verify state, exchange, save)
+  app/api/chat/route.ts            POST: save question → stream answer as NDJSON (lib/chat/stream-events.ts)
+  app/invite/[token]/              public invite page + acceptInvitation action
+  app/w/[workspaceId]/members/     invite form, pending invites (resend/revoke), roles, remove/leave
+  lib/chat/start.ts                save question + pending answer (and lazily create the session)
+  lib/email/                       SMTP mailer (nodemailer) + HTML-escaped templates
+  lib/invitations/tokens.ts        256-bit tokens; only SHA-256 hashes are stored
   app/w/[workspaceId]/settings/    Integrations: Add to Slack / test message / disconnect
 supabase/migrations/               SQL, applied in order (SQL editor or `supabase db push`)
 test/                              PGlite DB helpers, isolation tests, live AI pipeline test
@@ -109,7 +115,10 @@ test/                              PGlite DB helpers, isolation tests, live AI p
   - Slack text is escaped (`&`, `<`, `>`) in both blocks and the fallback `text`, so `<!channel>` or disguised links can't be injected. The webhook URL must match `hooks.slack.com` and is never logged.
 - **Integrations (secrets without a service-role key):** a workspace's Slack webhook and token are sealed with AES-256-GCM (`INTEGRATIONS_ENCRYPTION_KEY`) before insert, using `workspace:<id>:slack` as associated data. The row is readable by members (RLS) but useless without the server key, and a ciphertext copied to another workspace won't decrypt. Only admins can insert, update or delete. A check constraint rejects anything not prefixed `v1:`. Rotating the key requires reconnecting.
 - **Gate with tools:** no matching sources plus no tool-like intent (`mightUseTools`) means "I don't know" with no LLM call. With no sources, a reply is kept only if a tool succeeded; otherwise it's forced to `NO_ANSWER`.
+- **Streaming:** `answerQuestion(…, events)` emits status/delta/tool events and returns the `FinalAnswer` it saved. `runTurn` streams via `streamWithFallback`, which applies model fallback to opening the stream and its first chunk. Deltas are emitted only when there's grounded context, since an ungrounded reply may be replaced by `NO_ANSWER`. The client draws a live draft after the server messages and drops it once `router.refresh()` delivers the saved answer (`live.base === messages`).
+- **Teams:** invites store `sha256(token)`, expire after 7 days, and have one open invite per (org, email). `accept_invitation()` (security definer) checks the status and that the signed-in user's email matches, then inserts membership. RLS lets owners and admins invite, resend, revoke, change roles and remove non-owners; members can leave; the owner is untouchable. Sign-up from `/invite/<token>` skips the account-type step (`next` is carried through signup, login, Google and email confirmation).
 - **Gotcha:** pdf.js detaches the ArrayBuffer it receives. Always pass `bytes.slice()`.
+- **Gotcha (tests):** `beforeEach(() => mock.mockReset())` returns the mock, and Vitest runs a returned function as teardown. Use a block body.
 
 ## Conventions
 
@@ -136,10 +145,11 @@ Logos: `public/brand/dossify-icon.png` (mark) and `public/brand/dossify-logo.png
 ## Status / roadmap
 
 - [x] Auth: email + Google, personal vs organization accounts, onboarding, workspace switcher, app shell
-- [ ] Invitations for organization accounts (email invite → accept flow)
+- [x] Invitations for organization accounts (email invite → accept flow, roles, remove/leave)
 - [x] Document upload + ingestion (parse → chunk → embed → pgvector, idempotent by content hash)
 - [x] Workspace-scoped RAG chat with citations and "I don't know"
 - [x] Tool calling (`save_task`, `list_tasks`, `send_summary` via Slack webhook) + tool-call log
 - [x] Dashboard data (documents, chat sessions, tasks, tool logs)
-- [ ] Stretch: streaming, retrieval debug view, hybrid search, observability
+- [x] Stretch: streaming answers
+- [ ] Stretch: retrieval debug view, hybrid search, observability
 - [ ] Seed script, README test instructions, AI_NOTES.md

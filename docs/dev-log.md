@@ -51,3 +51,18 @@ Short, dated notes on decisions, wrong turns and bugs found while building with 
 - The first cut used one deployment-wide `SLACK_WEBHOOK_URL`, which is wrong for a multi-tenant product: every workspace would post to the operator's channel. Switched to Slack OAuth v2 (`incoming-webhook` scope). One Slack app; each Dossify workspace installs it and picks its own channel.
 - **Storing a per-tenant secret without a service-role key:** the app acts as the user (RLS), so anything the server can read, a member could read via the API too. The solution is application-level encryption: AES-256-GCM with the key only in the server env, and the workspace id as associated data (a copied ciphertext won't decrypt elsewhere). Members see channel metadata, never the URL. Tests cover round-trip, tamper, wrong-workspace, RLS (only admins write) and the plaintext check constraint.
 - **OAuth CSRF:** a one-time nonce in `state` plus an httpOnly cookie (path-scoped to the callback, 10 min). The callback also re-checks that the user is still a workspace admin before saving.
+
+## 2026-10-04: Safety pass, streaming, team invites
+
+- **Safety audit:** isolation, injection, malformed tool calls and secrets were already covered. The gap was a *failing LLM*. `test/resilience.test.ts` covers:
+  - retry, then fallback on 503
+  - skipping a retired model (404)
+  - failing fast on 400
+  - every model down
+  - `answerQuestion` recording a retryable error, and never throwing, when the model or retrieval fails
+  - ungrounded replies forced to "I don't know"
+  - invented citations removed
+  - an empty reply treated as a failure
+- **Test gotcha that cost real time:** `beforeEach(() => generateContent.mockReset())`. The arrow *returns* the mock, and Vitest treats a function returned from `beforeEach` as a teardown hook, so it called the mock (which was set to throw) after each test. The failure pointed at the thrown error, which looked like an unhandled rejection. Found by bisecting in a scratch test.
+- **Streaming design:** NDJSON over a route handler rather than a Server Action. We needed partial output plus the "question saved first" guarantee. Text is only streamed when grounded, because streaming an answer we then replace with "I don't know" would flash an ungrounded answer.
+- **Invites:** hashed tokens, email-match on accept, resend rotates the token, and SMTP is optional (copy-link fallback). Email templates escape names; a test injects `<a href>` and `\nBcc:` through the inviter and organization names.

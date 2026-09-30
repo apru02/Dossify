@@ -6,7 +6,9 @@ import { createTestDb, type TestDb } from "./helpers/db";
 const KEY = Buffer.alloc(32, 7).toString("base64");
 
 describe("secret box (AES-256-GCM)", () => {
-  beforeEach(() => vi.stubEnv("INTEGRATIONS_ENCRYPTION_KEY", KEY));
+  beforeEach(() => {
+    vi.stubEnv("INTEGRATIONS_ENCRYPTION_KEY", KEY);
+  });
   afterEach(() => vi.unstubAllEnvs());
 
   it("round-trips and never stores plaintext", () => {

@@ -57,7 +57,10 @@ export function LoginForm({ next, initialError }: { next: string; initialError?:
 
       <p className="mt-6 text-center text-sm text-muted">
         New to Dossify?{" "}
-        <Link href="/signup" className="font-semibold text-primary hover:underline">
+        <Link
+          href={next.startsWith("/invite/") ? `/signup?next=${encodeURIComponent(next)}` : "/signup"}
+          className="font-semibold text-primary hover:underline"
+        >
           Create an account
         </Link>
       </p>

@@ -22,14 +22,18 @@ const accountSchema = z
     message: "Enter your organization's name",
   });
 
-const signUpSchema = z.intersection(
-  accountSchema,
-  z.object({
-    fullName: z.string().trim().min(1, "Enter your name").max(80),
-    email: z.email("Enter a valid email address"),
-    password: z.string().min(8, "Use at least 8 characters").max(72, "Use at most 72 characters"),
-  }),
-);
+const personSchema = z.object({
+  fullName: z.string().trim().min(1, "Enter your name").max(80),
+  email: z.email("Enter a valid email address"),
+  password: z.string().min(8, "Use at least 8 characters").max(72, "Use at most 72 characters"),
+});
+const signUpSchema = z.intersection(accountSchema, personSchema);
+
+// Sign-ups that come from an invitation link skip the account-type choice and go straight back to
+// the invite page (they join an existing organization instead of creating one).
+function inviteTarget(next: string): string | null {
+  return /^\/invite\/[A-Za-z0-9_-]{43}$/.test(next) ? next : null;
+}
 
 const loginSchema = z.object({
   email: z.email("Enter a valid email address"),
@@ -79,18 +83,35 @@ export async function signUpWithEmail(_: AuthFormState, form: FormData): Promise
     fullName: text(form, "fullName"),
     email: text(form, "email"),
   };
-  const parsed = signUpSchema.safeParse({ ...values, password: text(form, "password") });
-  if (!parsed.success) return { fieldErrors: fieldErrors(parsed.error), values };
+  const invite = inviteTarget(text(form, "next"));
+  const input = { ...values, password: text(form, "password") };
 
-  const { kind, orgName, fullName, email, password } = parsed.data;
-  const next = onboardingPath(kind, orgName);
+  let next: string;
+  let metadata: Record<string, string | null>;
+  let person: z.infer<typeof personSchema>;
+  if (invite) {
+    const parsed = personSchema.safeParse(input);
+    if (!parsed.success) return { fieldErrors: fieldErrors(parsed.error), values };
+    person = parsed.data;
+    next = invite;
+    metadata = { full_name: person.fullName };
+  } else {
+    const parsed = signUpSchema.safeParse(input);
+    if (!parsed.success) return { fieldErrors: fieldErrors(parsed.error), values };
+    const { kind, orgName, ...rest } = parsed.data;
+    person = rest;
+    next = onboardingPath(kind, orgName);
+    // Saved on the auth user; onboarding reads it as defaults.
+    metadata = { full_name: rest.fullName, account_type: kind, org_name: kind === "organization" ? orgName : null };
+  }
+
+  const { email, password } = person;
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      // Saved on the auth user; onboarding reads it as defaults.
-      data: { full_name: fullName, account_type: kind, org_name: kind === "organization" ? orgName : null },
+      data: metadata,
       emailRedirectTo: `${await siteUrl()}/auth/callback?next=${encodeURIComponent(next)}`,
     },
   });
@@ -119,7 +140,10 @@ export async function logInWithEmail(_: AuthFormState, form: FormData): Promise<
 export async function continueWithGoogle(_: AuthFormState, form: FormData): Promise<AuthFormState> {
   let next = safeNext(text(form, "next"));
 
-  if (text(form, "intent") === "signup") {
+  const invite = inviteTarget(text(form, "next"));
+  if (invite) {
+    next = invite;
+  } else if (text(form, "intent") === "signup") {
     const values = { kind: text(form, "kind"), orgName: text(form, "orgName") };
     const parsed = accountSchema.safeParse(values);
     if (!parsed.success) return { fieldErrors: fieldErrors(parsed.error), values };
@@ -137,8 +161,10 @@ export async function continueWithGoogle(_: AuthFormState, form: FormData): Prom
   redirect(data.url);
 }
 
-export async function signOut() {
+// Optional `next` (e.g. an invite link) is carried to the login page.
+export async function signOut(form?: FormData) {
   const supabase = await createClient();
   await supabase.auth.signOut();
-  redirect("/login");
+  const next = safeNext(form?.get("next"), "");
+  redirect(next ? `/login?next=${encodeURIComponent(next)}` : "/login");
 }

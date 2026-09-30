@@ -9,7 +9,16 @@ import { Field, FormAlert } from "@/components/ui/field";
 import { continueWithGoogle, signUpWithEmail, type AuthFormState } from "../actions";
 import { GoogleButton, OrDivider } from "../google-button";
 
-export function SignupForm({ initialKind }: { initialKind: AccountKind }) {
+export function SignupForm({
+  initialKind,
+  inviteNext,
+  defaultEmail,
+}: {
+  initialKind: AccountKind;
+  inviteNext: string | null; // set when signing up from an invitation link
+  defaultEmail?: string;
+}) {
+  const loginHref = inviteNext ? `/login?next=${encodeURIComponent(inviteNext)}` : "/login";
   const [state, emailAction, emailPending] = useActionState(signUpWithEmail, {} as AuthFormState);
   const [googleState, googleAction, googlePending] = useActionState(continueWithGoogle, {} as AuthFormState);
   const [kind, setKind] = useState<AccountKind>(initialKind);
@@ -25,7 +34,7 @@ export function SignupForm({ initialKind }: { initialKind: AccountKind }) {
         </span>
         <h2 className="text-xl font-semibold">Check your email</h2>
         <p className="mt-2 text-sm text-muted">{state.notice}</p>
-        <Link href="/login" className="mt-6 inline-block text-sm font-semibold text-primary hover:underline">
+        <Link href={loginHref} className="mt-6 inline-block text-sm font-semibold text-primary hover:underline">
           Back to log in
         </Link>
       </div>
@@ -36,14 +45,19 @@ export function SignupForm({ initialKind }: { initialKind: AccountKind }) {
     <div className="rounded-3xl border border-line bg-white p-6 shadow-card sm:p-8">
       <div className="mb-6 space-y-1.5">
         <h2 className="text-2xl font-semibold tracking-tight">Create your account</h2>
-        <p className="text-sm text-muted">Choose how you&apos;ll use Dossify. You can add more workspaces later.</p>
+        <p className="text-sm text-muted">
+          {inviteNext
+            ? "Create your account to accept your team invitation."
+            : "Choose how you'll use Dossify. You can add more workspaces later."}
+        </p>
       </div>
 
       <form action={emailAction} className="space-y-5">
         <input type="hidden" name="intent" value="signup" />
+        {inviteNext && <input type="hidden" name="next" value={inviteNext} />}
         {error && <FormAlert>{error}</FormAlert>}
 
-        <AccountTypePicker value={kind} onChange={setKind} error={fe.kind} />
+        {!inviteNext && <AccountTypePicker value={kind} onChange={setKind} error={fe.kind} />}
 
         {kind === "organization" && (
           <Field
@@ -81,7 +95,7 @@ export function SignupForm({ initialKind }: { initialKind: AccountKind }) {
           autoComplete="email"
           placeholder="you@company.com"
           required
-          defaultValue={state.values?.email}
+          defaultValue={state.values?.email ?? defaultEmail}
           error={fe.email}
         />
         <Field
@@ -98,13 +112,13 @@ export function SignupForm({ initialKind }: { initialKind: AccountKind }) {
         />
 
         <Button type="submit" loading={emailPending} disabled={busy} className="w-full">
-          Create {kind === "organization" ? "organization" : "personal"} account
+          {inviteNext ? "Create account and continue" : `Create ${kind === "organization" ? "organization" : "personal"} account`}
         </Button>
       </form>
 
       <p className="mt-6 text-center text-sm text-muted">
         Already have an account?{" "}
-        <Link href="/login" className="font-semibold text-primary hover:underline">
+        <Link href={loginHref} className="font-semibold text-primary hover:underline">
           Log in
         </Link>
       </p>

@@ -39,10 +39,10 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (signedIn && AUTH_PAGES.includes(path)) {
-    const dash = request.nextUrl.clone();
-    dash.pathname = "/dashboard";
-    dash.search = "";
-    return copyCookies(response, NextResponse.redirect(dash));
+    // Already signed in: go where the page was going to send them (e.g. an invite link).
+    const next = request.nextUrl.searchParams.get("next") ?? "";
+    const safe = next.startsWith("/") && !next.startsWith("//") && !next.includes("\\") ? next : "/dashboard";
+    return copyCookies(response, NextResponse.redirect(new URL(safe, request.nextUrl.origin)));
   }
 
   // Remember the last workspace the user opened, so /dashboard can send them back to it.

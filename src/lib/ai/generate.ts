@@ -1,5 +1,5 @@
 import "server-only";
-import type { Content, GenerateContentResponse } from "@google/genai";
+import type { Content, FunctionDeclaration, GenerateContentResponse } from "@google/genai";
 import { CHAT_MODELS, gemini } from "./gemini";
 import { isRetryable } from "./retry";
 
@@ -17,6 +17,7 @@ export async function generateWithFallback(opts: {
   contents: Content[];
   systemInstruction: string;
   temperature?: number;
+  tools?: FunctionDeclaration[];
 }): Promise<Generated> {
   const started = Date.now();
   let lastError: unknown;
@@ -32,6 +33,7 @@ export async function generateWithFallback(opts: {
             systemInstruction: opts.systemInstruction,
             temperature: opts.temperature ?? 0.2,
             thinkingConfig: { thinkingLevel: "LOW" as never },
+            ...(opts.tools?.length ? { tools: [{ functionDeclarations: opts.tools }] } : {}),
             httpOptions: { timeout: CALL_TIMEOUT_MS },
           },
         });

@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:ai": "RUN_AI_TESTS=1 vitest run test/pipeline.ai.test.ts"
+    "test:ai": "RUN_AI_TESTS=1 vitest run test/pipeline.ai.test.ts test/tools.ai.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

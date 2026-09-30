@@ -1,6 +1,8 @@
 import "server-only";
 import { cache } from "react";
 import type { Citation } from "@/lib/rag/citations";
+import type { ToolActivity } from "@/lib/tools/types";
+import { toolActivityByMessage } from "./tool-calls";
 import { isUuid } from "@/lib/data/workspaces";
 import { createClient } from "@/lib/supabase/server";
 
@@ -12,6 +14,7 @@ export type ChatMessage = {
   error: string | null;
   replyTo: string | null;
   citations: Citation[];
+  tools: ToolActivity[];
   model: string | null;
   latencyMs: number | null;
   createdAt: string;
@@ -88,6 +91,8 @@ export async function listMessages(workspaceId: string, sessionId: string, limit
     .returns<Raw[]>();
   if (error) throw error;
 
+  const tools = await toolActivityByMessage(data.filter((m) => m.role === "assistant").map((m) => m.id));
+
   return data.reverse().map((m) => {
     const stale = m.status === "pending" && Date.now() - new Date(m.updated_at).getTime() > STALE_PENDING_MS;
     return {
@@ -98,6 +103,7 @@ export async function listMessages(workspaceId: string, sessionId: string, limit
       error: stale ? "This answer was interrupted. Try again." : m.error,
       replyTo: m.reply_to,
       citations: m.citations ?? [],
+      tools: tools.get(m.id) ?? [],
       model: m.model,
       latencyMs: m.latency_ms,
       createdAt: m.created_at,

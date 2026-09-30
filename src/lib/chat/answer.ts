@@ -1,11 +1,13 @@
 import "server-only";
 import type { Content } from "@google/genai";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { generateWithFallback } from "@/lib/ai/generate";
 import { buildCitations, isNoAnswer, removeInvalidCitations } from "@/lib/rag/citations";
 import { NO_ANSWER, historyText, systemPrompt, userTurn } from "@/lib/rag/prompt";
 import { retrieveChunks } from "@/lib/rag/retrieve";
 import { MIN_BEST_SIMILARITY, selectContext } from "@/lib/rag/select";
+import { TOOLS_BY_NAME, mightUseTools } from "@/lib/tools/registry";
+import { supabaseToolServices } from "@/lib/tools/services";
+import { runTurn } from "./run-turn";
 
 const HISTORY_MESSAGES = 6; // last 3 exchanges, for follow-up questions
 
@@ -20,6 +22,7 @@ export async function answerQuestion(
   args: {
     workspaceId: string;
     workspaceName: string;
+    userName: string; // shown in Slack as "Shared by …"
     sessionId: string; // conversation history comes from this session only; documents are workspace-wide
     assistantId: string;
     question: string;
@@ -51,8 +54,9 @@ export async function answerQuestion(
       })),
     };
 
-    // Honest refusal without spending an LLM call when nothing relevant was found.
-    if (context.length === 0) {
+    // Honest refusal without spending an LLM call: nothing relevant was found and the message
+    // doesn't look like a request a tool could handle.
+    if (context.length === 0 && !mightUseTools(args.question)) {
       await finish({ status: "complete", content: NO_ANSWER, citations: [], retrieval, error: null });
       return;
     }
@@ -80,23 +84,58 @@ export async function answerQuestion(
     }
     if (history.at(-1)?.role === "user") history.pop(); // the new question must follow a model turn
 
-    const { response, model } = await generateWithFallback({
+    // On a retry, side effects that already succeeded for this message must not run again
+    // (no duplicate tasks or Slack posts): mark those tools as used up for this turn.
+    const calls = new Map<string, number>();
+    const { data: done } = await supabase
+      .from("tool_calls")
+      .select("tool_name")
+      .eq("message_id", args.assistantId)
+      .eq("status", "ok")
+      .returns<{ tool_name: string }[]>();
+    for (const { tool_name } of done ?? []) {
+      const tool = TOOLS_BY_NAME.get(tool_name);
+      if (tool?.requiresIntent) calls.set(tool_name, tool.maxPerTurn);
+    }
+
+    const turn = await runTurn({
       systemInstruction: systemPrompt(args.workspaceName),
-      contents: [...history, { role: "user", parts: [{ text: userTurn(args.question, context) }] }],
+      history,
+      userText: userTurn(args.question, context),
+      tool: {
+        workspaceName: args.workspaceName,
+        userName: args.userName,
+        question: args.question,
+        calls,
+        services: supabaseToolServices(supabase, {
+          workspaceId: args.workspaceId,
+          sessionId: args.sessionId,
+          messageId: args.assistantId,
+        }),
+      },
     });
 
-    const raw = response.text?.trim();
-    if (!raw) throw new Error(`Empty response (finishReason: ${response.candidates?.[0]?.finishReason})`);
-    const answer = isNoAnswer(raw) ? NO_ANSWER : removeInvalidCitations(raw, context.length);
+    const toolsSucceeded = turn.activities.some((a) => a.status === "ok");
+    let answer = turn.text;
+    if (!answer) {
+      if (!turn.activities.length) throw new Error("Empty response from the model");
+      answer = turn.activities.map((a) => `- ${a.label}`).join("\n");
+    }
+    if (context.length === 0) {
+      // Nothing from the documents: the only acceptable replies are tool confirmations or a refusal.
+      if (!toolsSucceeded && !isNoAnswer(answer)) answer = NO_ANSWER;
+    } else {
+      answer = isNoAnswer(answer) && !toolsSucceeded ? NO_ANSWER : removeInvalidCitations(answer, context.length);
+    }
 
     await finish({
       status: "complete",
       content: answer,
-      citations: buildCitations(answer, context),
+      citations: context.length ? buildCitations(answer, context) : [],
       retrieval,
-      model,
-      prompt_tokens: response.usageMetadata?.promptTokenCount ?? null,
-      output_tokens: response.usageMetadata?.candidatesTokenCount ?? null,
+      model: turn.model,
+      prompt_tokens: turn.promptTokens || null,
+      output_tokens: turn.outputTokens || null,
       error: null,
     });
   } catch (err) {

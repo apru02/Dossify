@@ -3,11 +3,24 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, FileSearch, FileText, Lightbulb, Loader2, MessageSquarePlus, RotateCcw, SendHorizontal } from "lucide-react";
+import {
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
+  FileSearch,
+  FileText,
+  Lightbulb,
+  Loader2,
+  MessageSquarePlus,
+  RotateCcw,
+  SendHorizontal,
+  XCircle,
+} from "lucide-react";
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { askQuestion, retryAnswer } from "@/app/w/[workspaceId]/chat-actions";
 import { LogoMark } from "@/components/brand/logo";
 import type { ChatMessage, ChatSession } from "@/lib/data/chat";
+import type { ToolActivity } from "@/lib/tools/types";
 import { AnswerMarkdown } from "./answer-markdown";
 
 const SUGGESTIONS = [
@@ -25,7 +38,7 @@ type Props = {
 
 function tempMessage(role: ChatMessage["role"], content: string, status: ChatMessage["status"]): ChatMessage {
   const now = new Date().toISOString();
-  return { id: `temp-${role}-${now}`, role, content, status, error: null, replyTo: null, citations: [], model: null, latencyMs: null, createdAt: now, updatedAt: now };
+  return { id: `temp-${role}-${now}`, role, content, status, error: null, replyTo: null, citations: [], tools: [], model: null, latencyMs: null, createdAt: now, updatedAt: now };
 }
 
 export function ChatPanel({ workspaceId, workspaceName, session, messages, readyDocuments }: Props) {
@@ -135,6 +148,7 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
               ) : (
                 <AssistantMessage
                   key={m.id}
+                  workspaceId={workspaceId}
                   message={m}
                   workspaceName={workspaceName}
                   retrying={retryingId === m.id}
@@ -196,12 +210,14 @@ export function ChatPanel({ workspaceId, workspaceName, session, messages, ready
 }
 
 function AssistantMessage({
+  workspaceId,
   message: m,
   workspaceName,
   retrying,
   onRetry,
   disabled,
 }: {
+  workspaceId: string;
   message: ChatMessage;
   workspaceName: string;
   retrying: boolean;
@@ -237,6 +253,8 @@ function AssistantMessage({
             <div className="rounded-2xl rounded-tl-md bg-white px-4 py-3 shadow-card">
               <AnswerMarkdown content={m.content} onCite={(n) => setActive((a) => (a === n ? null : n))} />
             </div>
+
+            {m.tools.length > 0 && <ToolActivityList workspaceId={workspaceId} tools={m.tools} />}
 
             {m.citations.length > 0 && (
               <div className="space-y-2">
@@ -283,5 +301,34 @@ function AssistantMessage({
         )}
       </div>
     </div>
+  );
+}
+
+const toolStyles = {
+  ok: { icon: CheckCircle2, className: "border-success/20 bg-success/5 text-success" },
+  rejected: { icon: Ban, className: "border-line bg-canvas text-muted" },
+  error: { icon: XCircle, className: "border-danger/20 bg-danger/5 text-danger" },
+} as const;
+
+// What the assistant did (or was stopped from doing) while answering.
+function ToolActivityList({ workspaceId, tools }: { workspaceId: string; tools: ToolActivity[] }) {
+  return (
+    <ul className="flex flex-wrap gap-1.5" aria-label="Actions taken">
+      {tools.map((t, i) => {
+        const { icon: Icon, className } = toolStyles[t.status];
+        return (
+          <li key={i}>
+            <Link
+              href={`/w/${workspaceId}/${t.tool === "save_task" || t.tool === "list_tasks" ? "tasks" : "tool-logs"}`}
+              className={clsx("inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium", className)}
+              title={t.label}
+            >
+              <Icon className="size-3.5 shrink-0" aria-hidden />
+              <span className="truncate">{t.label}</span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

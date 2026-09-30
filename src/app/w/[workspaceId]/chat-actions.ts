@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireUser } from "@/lib/auth";
+import { displayName, requireUser } from "@/lib/auth";
 import { answerQuestion } from "@/lib/chat/answer";
 import { STALE_PENDING_MS, getSession, titleFromQuestion } from "@/lib/data/chat";
 import { getWorkspace } from "@/lib/data/workspaces";
@@ -24,7 +24,7 @@ export async function askQuestion(input: {
   sessionId: string | null; // null = start a new chat with this question
   question: string;
 }): Promise<ChatActionResult> {
-  await requireUser();
+  const user = await requireUser();
   const parsed = askSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const { question } = parsed.data;
@@ -79,6 +79,7 @@ export async function askQuestion(input: {
   await answerQuestion(supabase, {
     workspaceId: workspace.id,
     workspaceName: workspace.name,
+    userName: displayName(user),
     sessionId,
     assistantId: pending.id,
     question,
@@ -90,7 +91,7 @@ export async function askQuestion(input: {
 }
 
 export async function retryAnswer(input: { workspaceId: string; messageId: string }): Promise<ChatActionResult> {
-  await requireUser();
+  const user = await requireUser();
   const parsed = z.object({ workspaceId: z.uuid(), messageId: z.uuid() }).safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid request." };
 
@@ -121,6 +122,7 @@ export async function retryAnswer(input: { workspaceId: string; messageId: strin
   await answerQuestion(supabase, {
     workspaceId: workspace.id,
     workspaceName: workspace.name,
+    userName: displayName(user),
     sessionId: answer.session_id,
     assistantId: answer.id,
     question: question.content,

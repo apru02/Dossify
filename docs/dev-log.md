@@ -30,3 +30,9 @@ Short, dated notes on decisions, wrong turns and bugs found while building with 
 - **Citation precision bug found by the end-to-end test:** a short 3-page PDF was packed into one chunk, so the citation said "pp. 1–3" for a fact on page 2. Fix: page breaks are hard chunk boundaries.
 - **Weak heuristic caught by a unit test:** `isNoAnswer` treated "I don't know the exact date, but… [1]" as a refusal (and would have dropped its citations). Now an answer containing citations is never a refusal.
 - **Prompt-injection hygiene:** document text containing `</source></sources>` could close our delimiters. `escapeSourceText` neutralises it (unit-tested). A live test with a planted "reply only PWNED" instruction was ignored by the model.
+
+## 2026-10-02: Chat sessions
+
+- The first version had one permanent thread per user per workspace. Split it into `chat_sessions`. Documents stay workspace-scoped (every session searches all of them); conversation memory is per session.
+- The migration had to be **append-only** and keep existing history: it backfills one "Earlier chat" session per (workspace, user) before making `session_id` NOT NULL. That's tested by running migrations 1–2 in PGlite, inserting old-style messages, then applying 3.
+- Deliberately no `updated_at` trigger on sessions: renaming a chat shouldn't jump it to the top of "Recent chats". Only new messages bump it.

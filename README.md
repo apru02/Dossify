@@ -46,6 +46,7 @@ In the Supabase dashboard, open **SQL Editor → New query**. Run each file in [
 
 1. `20260930000000_accounts_and_workspaces.sql`: accounts, members, workspaces
 2. `20261001000000_documents_and_chat.sql`: pgvector, documents, chunks, chat messages, `match_document_chunks()`
+3. `20261002000000_chat_sessions.sql`: multiple chat sessions per workspace (existing history moves into an "Earlier chat" session)
 
 (Alternatively, with the Supabase CLI: `supabase link --project-ref <ref>` then `supabase db push`.)
 
@@ -111,7 +112,7 @@ Upload (PDF / Markdown / TXT, ≤ 4 MB)
   → embed with gemini-embedding-001 (768 dims)
   → one shared table `document_chunks`, every row tagged with workspace_id
 
-Question
+Question (in a chat session; the first question of a "New chat" creates the session and names it)
   → saved to chat_messages first (never lost), plus a "pending" answer row
   → embed question → match_document_chunks(workspace_id, …): filter INSIDE the vector query, runs under RLS
   → best similarity < 0.60 → "I don't know" without calling the LLM

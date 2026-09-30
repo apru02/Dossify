@@ -1,5 +1,7 @@
 import "server-only";
+import { cache } from "react";
 import type { Citation } from "@/lib/rag/citations";
+import { isUuid } from "@/lib/data/workspaces";
 import { createClient } from "@/lib/supabase/server";
 
 export type ChatMessage = {
@@ -33,13 +35,54 @@ type Raw = {
 // An answer still "pending" after this long was interrupted (e.g. the function timed out).
 export const STALE_PENDING_MS = 90_000;
 
-// The signed-in user's thread in this workspace (RLS also restricts to own messages).
-export async function listMessages(workspaceId: string, limit = 100): Promise<ChatMessage[]> {
+export type ChatSession = { id: string; title: string; updatedAt: string };
+
+type RawSession = { id: string; title: string; updated_at: string };
+const toSession = (s: RawSession): ChatSession => ({ id: s.id, title: s.title, updatedAt: s.updated_at });
+
+// The signed-in user's sessions in this workspace, most recently active first (RLS: own only).
+export const listSessions = cache(async (workspaceId: string, limit = 50): Promise<ChatSession[]> => {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("chat_sessions")
+    .select("id, title, updated_at")
+    .eq("workspace_id", workspaceId)
+    .order("updated_at", { ascending: false })
+    .limit(limit)
+    .returns<RawSession[]>();
+  if (error) throw error;
+  return data.map(toSession);
+});
+
+// Null when the session doesn't exist, isn't the user's, or belongs to another workspace.
+export async function getSession(workspaceId: string, sessionId: string): Promise<ChatSession | null> {
+  if (!isUuid(sessionId)) return null;
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("chat_sessions")
+    .select("id, title, updated_at")
+    .eq("id", sessionId)
+    .eq("workspace_id", workspaceId)
+    .maybeSingle<RawSession>();
+  if (error) throw error;
+  return data ? toSession(data) : null;
+}
+
+// Short title from the first question, cut at a word boundary.
+export function titleFromQuestion(question: string): string {
+  const flat = question.replace(/\s+/g, " ").trim();
+  if (flat.length <= 60) return flat;
+  const cut = flat.slice(0, 60);
+  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
+}
+
+export async function listMessages(workspaceId: string, sessionId: string, limit = 200): Promise<ChatMessage[]> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("chat_messages")
     .select("id, role, content, status, error, reply_to, citations, model, latency_ms, created_at, updated_at")
     .eq("workspace_id", workspaceId)
+    .eq("session_id", sessionId)
     .order("created_at", { ascending: false })
     .limit(limit)
     .returns<Raw[]>();

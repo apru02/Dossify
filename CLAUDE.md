@@ -43,7 +43,9 @@ src/
     onboarding/                    first-run: pick account type, create account + first workspace
     dashboard/page.tsx             redirects to the last-used (cookie) or first workspace
     w/[workspaceId]/               the app shell; every page is scoped to one workspace
-      page.tsx + chat-actions.ts   chat (askQuestion, retryAnswer)
+      page.tsx                     "New chat" (session is created by the first question)
+      c/[sessionId]/page.tsx       one chat session
+      chat-actions.ts              askQuestion, retryAnswer, renameSession, deleteSession
       documents/                   upload (dropzone → uploadDocument action), list, delete
     w/actions.ts                   workspace server actions
   components/{ui,brand,app,chat}/
@@ -91,7 +93,7 @@ test/                              PGlite DB helpers, isolation tests, live AI p
 - **Prompt injection:** sources go in numbered `<source>` blocks, and document text that could close or forge the delimiters is neutralised (`escapeSourceText`). The system prompt says source text is data. Answers render through react-markdown (no raw HTML). Tools, when added, must still be safe even if the model is fooled.
 - **Models:** `GEMINI_CHAT_MODELS` is tried in order. One retry on 429/5xx/timeout, and a 404 skips to the next model (pinned old models get retired). 20s per call, 45s total budget (Vercel `maxDuration = 60`). `thinkingLevel: LOW`, temperature 0.2.
 - **Reliability:** the question and a `pending` answer row are saved before any AI call. Failures set `status = 'error'` with a friendly message, and the UI shows Retry. A `pending` row older than 90s is shown as interrupted and is retryable.
-- **Chat privacy:** each user's thread is private (RLS: own `user_id`), even within a shared org workspace.
+- **Chat sessions:** a workspace has many sessions per user (`chat_sessions`), created lazily by the first question and titled from it. Conversation history sent to the LLM comes from the current session only. **Retrieval always searches all of the workspace's documents**, whatever the session. Sessions and messages are private to their user (RLS), even in a shared org workspace, and a composite FK `(session_id, workspace_id, user_id)` stops a message landing in another user's or workspace's session.
 - **Gotcha:** pdf.js detaches the ArrayBuffer it receives. Always pass `bytes.slice()`.
 
 ## Conventions

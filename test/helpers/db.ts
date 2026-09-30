@@ -9,7 +9,9 @@ const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
 
 export type TestDb = Awaited<ReturnType<typeof createTestDb>>;
 
-export async function createTestDb() {
+// `upTo` stops after that migration file (inclusive), so upgrade/backfill paths can be tested;
+// call `migrate()` to apply the rest.
+export async function createTestDb({ upTo }: { upTo?: string } = {}) {
   const db = await PGlite.create({ extensions: { vector } });
   await db.exec(`
     create role anon; create role authenticated;
@@ -22,14 +24,22 @@ export async function createTestDb() {
     grant execute on function auth.uid() to authenticated, anon;
     grant usage on schema public to authenticated, anon;
   `);
-  for (const file of readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort()) {
-    await db.exec(readFileSync(path.join(MIGRATIONS, file), "utf8"));
+  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
+  const applied = new Set<string>();
+  async function migrate(until?: string) {
+    for (const file of files) {
+      if (applied.has(file)) continue;
+      if (until && file > until) break;
+      await db.exec(readFileSync(path.join(MIGRATIONS, file), "utf8"));
+      applied.add(file);
+    }
+    // Supabase's default grants (RLS still decides which rows are visible).
+    await db.exec(`
+      grant select, insert, update, delete on all tables in schema public to authenticated;
+      grant usage on all sequences in schema public to authenticated;
+    `);
   }
-  // Supabase's default grants (RLS still decides which rows are visible).
-  await db.exec(`
-    grant select, insert, update, delete on all tables in schema public to authenticated;
-    grant usage on all sequences in schema public to authenticated;
-  `);
+  await migrate(upTo);
 
   let n = 0;
   async function createUser(email: string) {
@@ -57,7 +67,7 @@ export async function createTestDb() {
     throw new Error(`Expected query to be rejected: ${sql}`);
   }
 
-  return { db, createUser, as, expectDenied };
+  return { db, createUser, as, expectDenied, migrate };
 }
 
 export const vec = (values: number[], dims = 768) =>

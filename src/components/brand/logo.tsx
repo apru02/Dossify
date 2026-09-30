@@ -3,8 +3,18 @@ import Image from "next/image";
 import Link from "next/link";
 
 export function LogoMark({ size = 32, className }: { size?: number; className?: string }) {
+  // Fixed box via inline style: Tailwind's preflight sets `img { height: auto }`, which lets a
+  // flex row stretch the mark to the row's full height (e.g. next to a long chat answer).
   return (
-    <Image src="/brand/dossify-icon.png" alt="" width={size} height={size} priority className={clsx("shrink-0", className)} />
+    <Image
+      src="/brand/dossify-icon.png"
+      alt=""
+      width={size}
+      height={size}
+      priority
+      style={{ width: size, height: size }}
+      className={clsx("shrink-0 object-contain", className)}
+    />
   );
 }
 

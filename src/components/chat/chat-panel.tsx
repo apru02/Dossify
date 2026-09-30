@@ -186,7 +186,7 @@ function AssistantMessage({
 
   return (
     <div className="flex gap-3">
-      <LogoMark size={28} className="mt-1" />
+      <LogoMark size={28} className="mt-1 self-start" />
       <div className="min-w-0 flex-1 space-y-3">
         {m.status === "pending" || retrying ? (
           <p className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm text-muted shadow-card">

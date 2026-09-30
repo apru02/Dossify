@@ -58,6 +58,13 @@ src/
     ingest/                        parse (pdf/md/txt) → chunk (pure) → ingest (idempotent orchestration)
     rag/                           retrieve (RPC), select (similarity gate), prompt, citations (pure)
     chat/answer.ts                 fills a pending assistant message; never throws
+    chat/run-turn.ts               multi-step tool loop (≤4 tool rounds, then a final answer without tools)
+    tools/                         registry (Zod schemas → Gemini declarations), execute (validate → gate → run → log),
+                                   services (Supabase-backed, workspace-pinned), slack (webhook + escaping)
+    integrations/                  Slack OAuth ("Add to Slack"), OAuth state (CSRF), encrypted per-workspace store
+    crypto/secret-box.ts           AES-256-GCM seal/open with context (workspace id) as associated data
+  app/api/integrations/slack/      connect (start OAuth, admins only) and callback (verify state, exchange, save)
+  app/w/[workspaceId]/settings/    Integrations: Add to Slack / test message / disconnect
 supabase/migrations/               SQL, applied in order (SQL editor or `supabase db push`)
 test/                              PGlite DB helpers, isolation tests, live AI pipeline test
 ```
@@ -94,6 +101,14 @@ test/                              PGlite DB helpers, isolation tests, live AI p
 - **Models:** `GEMINI_CHAT_MODELS` is tried in order. One retry on 429/5xx/timeout, and a 404 skips to the next model (pinned old models get retired). 20s per call, 45s total budget (Vercel `maxDuration = 60`). `thinkingLevel: LOW`, temperature 0.2.
 - **Reliability:** the question and a `pending` answer row are saved before any AI call. Failures set `status = 'error'` with a friendly message, and the UI shows Retry. A `pending` row older than 90s is shown as interrupted and is retryable.
 - **Chat sessions:** a workspace has many sessions per user (`chat_sessions`), created lazily by the first question and titled from it. Conversation history sent to the LLM comes from the current session only. **Retrieval always searches all of the workspace's documents**, whatever the session. Sessions and messages are private to their user (RLS), even in a shared org workspace, and a composite FK `(session_id, workspace_id, user_id)` stops a message landing in another user's or workspace's session.
+- **Tools:** `save_task`, `list_tasks`, `send_summary`. `send_summary` posts to the **current workspace's own** Slack channel, connected via "Add to Slack" in Settings.
+  - Tools reach data only through `ToolServices`, which is pinned server-side to one workspace, session and message. The model never supplies ids.
+  - Side-effect tools have `requiresIntent`: they run only if the **user's latest message** asks for that action, so document text can't trigger them.
+  - `maxPerTurn` limits per tool. On a retry, side effects that already succeeded are marked used, so there are no duplicate tasks or posts.
+  - Every attempt is written to the append-only `tool_calls` table, which feeds the Tool Logs page and the chips under answers.
+  - Slack text is escaped (`&`, `<`, `>`) in both blocks and the fallback `text`, so `<!channel>` or disguised links can't be injected. The webhook URL must match `hooks.slack.com` and is never logged.
+- **Integrations (secrets without a service-role key):** a workspace's Slack webhook and token are sealed with AES-256-GCM (`INTEGRATIONS_ENCRYPTION_KEY`) before insert, using `workspace:<id>:slack` as associated data. The row is readable by members (RLS) but useless without the server key, and a ciphertext copied to another workspace won't decrypt. Only admins can insert, update or delete. A check constraint rejects anything not prefixed `v1:`. Rotating the key requires reconnecting.
+- **Gate with tools:** no matching sources plus no tool-like intent (`mightUseTools`) means "I don't know" with no LLM call. With no sources, a reply is kept only if a tool succeeded; otherwise it's forced to `NO_ANSWER`.
 - **Gotcha:** pdf.js detaches the ArrayBuffer it receives. Always pass `bytes.slice()`.
 
 ## Conventions
@@ -124,7 +139,7 @@ Logos: `public/brand/dossify-icon.png` (mark) and `public/brand/dossify-logo.png
 - [ ] Invitations for organization accounts (email invite → accept flow)
 - [x] Document upload + ingestion (parse → chunk → embed → pgvector, idempotent by content hash)
 - [x] Workspace-scoped RAG chat with citations and "I don't know"
-- [ ] Tool calling (`save_task`, `list_tasks`, `send_summary` via Discord webhook) + tool-call log
-- [ ] Dashboard data (documents ✓, chat history ✓, tool logs)
+- [x] Tool calling (`save_task`, `list_tasks`, `send_summary` via Slack webhook) + tool-call log
+- [x] Dashboard data (documents, chat sessions, tasks, tool logs)
 - [ ] Stretch: streaming, retrieval debug view, hybrid search, observability
 - [ ] Seed script, README test instructions, AI_NOTES.md

@@ -9,7 +9,7 @@ Two kinds of accounts:
 - **Personal:** just you, with as many private workspaces as you like.
 - **Organization:** shared workspaces for a team. Members can access every workspace in the organization.
 
-> Status: accounts, workspaces, document ingestion and grounded chat with citations are done. Tool calling comes next (see [CLAUDE.md](CLAUDE.md) → Status).
+> Status: accounts, workspaces, document ingestion, grounded chat with citations, chat sessions and tool calling (tasks + Slack) are done (see [CLAUDE.md](CLAUDE.md) → Status).
 
 ## Tech stack
 
@@ -33,6 +33,8 @@ npm run dev                  # http://localhost:3000
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → **Publishable key** (or the legacy `anon` key) |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` locally; your production URL on Vercel |
 | `GEMINI_API_KEY` | [Google AI Studio → API keys](https://aistudio.google.com/apikey) (free, no card). Server-only. |
+| `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` | Your Slack app's credentials (see "Slack" below). Server-only; optional. |
+| `INTEGRATIONS_ENCRYPTION_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts each workspace's Slack connection. |
 
 Optional: `GEMINI_CHAT_MODELS` (comma-separated fallback chain), `GEMINI_EMBEDDING_MODEL`, `RAG_MIN_SIMILARITY`. The defaults are in `.env.example`.
 
@@ -47,6 +49,8 @@ In the Supabase dashboard, open **SQL Editor → New query**. Run each file in [
 1. `20260930000000_accounts_and_workspaces.sql`: accounts, members, workspaces
 2. `20261001000000_documents_and_chat.sql`: pgvector, documents, chunks, chat messages, `match_document_chunks()`
 3. `20261002000000_chat_sessions.sql`: multiple chat sessions per workspace (existing history moves into an "Earlier chat" session)
+4. `20261003000000_tasks_and_tool_calls.sql`: tasks and the append-only tool-call log
+5. `20261004000000_workspace_integrations.sql`: per-workspace Slack connections (encrypted)
 
 (Alternatively, with the Supabase CLI: `supabase link --project-ref <ref>` then `supabase db push`.)
 
@@ -121,11 +125,42 @@ Question (in a chat session; the first question of a "New chat" creates the sess
   → answer + citations (document, page/section, snippet) + retrieval scores saved; failures are retryable
 ```
 
+## Tools the assistant can call
+
+| Tool | What it does | Guardrails |
+|---|---|---|
+| `save_task(title, due_date?, notes?)` | Adds a task to the current workspace (Tasks page) | Runs only if your message asks for it (e.g. "remind me", "add a task"); at most 5 per message |
+| `list_tasks(status?, limit?)` | Reads the workspace's tasks | Read-only; at most 3 per message |
+| `send_summary(title, summary)` | Posts to the team's Slack channel | Runs only if your message asks to send/share/post; once per message; Slack mentions and links are escaped |
+
+The model proposes a call and the server decides:
+- Arguments are validated with strict Zod schemas. Unknown tools and extra keys (such as a `workspace_id`) are rejected.
+- The workspace always comes from your session.
+- The model can chain tools, e.g. save a task and then list tasks, for up to 4 rounds.
+- Every attempt, including blocked ones, is recorded on the **Tool Logs** page.
+- Retrying a failed answer never repeats a task save or a Slack post that already succeeded.
+
+### Slack (per workspace)
+
+Each Dossify workspace connects **its own** Slack channel: **Settings → Integrations → Add to Slack**. Owners and admins can connect, disconnect or send a test message.
+
+- It's standard Slack OAuth v2 with only the `incoming-webhook` scope. Dossify registers one Slack app, and each install returns a webhook for the channel the user picks.
+- The webhook (and token) are encrypted with AES-256-GCM before being stored. The key is `INTEGRATIONS_ENCRYPTION_KEY`, and the workspace id is bound as associated data. Members can see which channel is connected, but never the URL.
+- `send_summary` posts to the current workspace's channel. If none is connected, it tells the user to connect Slack in Settings.
+- The OAuth round-trip is protected by a one-time `state` nonce, checked against an httpOnly cookie.
+
+**One-time app setup (deployment owner):**
+1. At https://api.slack.com/apps, choose **Create New App → From scratch**.
+2. Under **OAuth & Permissions → Redirect URLs**, add `https://<your-domain>/api/integrations/slack/callback`.
+3. Under **Incoming Webhooks**, turn it on.
+4. Under **Manage Distribution**, activate public distribution so other Slack workspaces can install it.
+5. Copy the Client ID and Client Secret into your environment.
+
 ## Tests
 
 ```bash
 npm test          # unit tests + database isolation tests (in-memory Postgres with the real migrations)
-npm run test:ai   # live end-to-end RAG test against Gemini (needs GEMINI_API_KEY; rate-limited)
+npm run test:ai   # live Gemini tests: RAG pipeline + multi-step tool calling (needs GEMINI_API_KEY; rate-limited)
 ```
 
 The isolation tests put a secret in one workspace and verify that no query from another workspace can retrieve it, even with a perfect vector match or a forged workspace id.

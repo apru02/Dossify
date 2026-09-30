@@ -10,8 +10,10 @@ Tagline: "Your documents, more done."
 
 - **Next.js 16** (App Router, TypeScript, React 19, Server Actions). APIs differ from older Next.js: read `node_modules/next/dist/docs/` before using an unfamiliar API. Middleware is now `src/proxy.ts`.
 - **Tailwind CSS v4.** Brand tokens are in `src/app/globals.css` (`@theme`). No component library; small primitives live in `src/components/ui/`.
-- **Supabase:** Auth (email/password + Google OAuth), Postgres, pgvector (added later), RLS on every table. Client: `@supabase/ssr`.
-- **Gemini** (`@google/genai`) for chat, tool calling and embeddings (planned).
+- **Supabase:** Auth (email/password + Google OAuth), Postgres, pgvector, RLS on every table. Client: `@supabase/ssr`.
+- **Gemini** (`@google/genai`): `gemini-embedding-001` (768 dims) for embeddings, and a fallback chain of "-latest" flash models for chat (see "AI pipeline" below).
+- **unpdf** (serverless pdf.js) for PDF text, **react-markdown** for rendering answers (no raw HTML).
+- **Vitest** + **PGlite** (in-memory Postgres + pgvector) for tests that run the real migrations.
 - **Zod** validates every input: forms, server actions and, later, LLM tool arguments.
 - Hosted on **Vercel**. Everything must stay on free, no-credit-card tiers.
 
@@ -21,10 +23,12 @@ Tagline: "Your documents, more done."
 npm run dev      # http://localhost:3000 (needs .env.local, see .env.example)
 npm run lint
 npx tsc --noEmit
+npm test         # unit + DB isolation tests (PGlite runs supabase/migrations/*.sql)
+npm run test:ai  # opt-in live Gemini end-to-end RAG test (rate-limited, needs GEMINI_API_KEY)
 npm run build
 ```
 
-Run lint, typecheck and build before calling any task done.
+Run lint, typecheck, `npm test` and build before calling any task done. Run `npm run test:ai` after touching the prompt, chunking, retrieval or model settings.
 
 ## Layout
 
@@ -39,14 +43,21 @@ src/
     onboarding/                    first-run: pick account type, create account + first workspace
     dashboard/page.tsx             redirects to the last-used (cookie) or first workspace
     w/[workspaceId]/               the app shell; every page is scoped to one workspace
+      page.tsx + chat-actions.ts   chat (askQuestion, retryAnswer)
+      documents/                   upload (dropzone → uploadDocument action), list, delete
     w/actions.ts                   workspace server actions
-  components/{ui,brand,app}/
+  components/{ui,brand,app,chat}/
   lib/
     auth.ts                        getCurrentUser / requireUser (getUser(), cached per request)
     urls.ts                        safeNext() (open-redirect guard), siteUrl()
     supabase/{server,proxy,env}.ts
     data/                          typed, RLS-backed queries (one file per domain)
+    ai/                            Gemini client, embeddings, generateWithFallback, retry
+    ingest/                        parse (pdf/md/txt) → chunk (pure) → ingest (idempotent orchestration)
+    rag/                           retrieve (RPC), select (similarity gate), prompt, citations (pure)
+    chat/answer.ts                 fills a pending assistant message; never throws
 supabase/migrations/               SQL, applied in order (SQL editor or `supabase db push`)
+test/                              PGlite DB helpers, isolation tests, live AI pipeline test
 ```
 
 ## Tenancy model (read before touching data code)
@@ -70,6 +81,18 @@ supabase/migrations/               SQL, applied in order (SQL editor or `supabas
 7. **Secrets:** never commit `.env*` (only `.env.example`), never log keys or webhook URLs, and never import server modules into client components (`import "server-only"` guards them).
 8. **Redirect targets from query strings go through `safeNext()`.**
 9. **Migrations are append-only.** Add a new timestamped file; don't edit an applied one.
+
+## AI pipeline (decisions and why)
+
+- **Chunking:** ~2,000 chars with ~300 overlap, paragraph → sentence → word splitting. **Hard break at every PDF page** (citations name one page), and a soft break at Markdown sections. Embedded text gets a "Document: … / Section: …" header; stored content stays clean.
+- **Idempotency:** `documents` is unique on `(workspace_id, content_hash)` (sha256 of bytes). Re-uploading a ready file is a no-op; a failed or stale-processing file is reprocessed in place (old chunks deleted first).
+- **Retrieval:** `match_document_chunks(workspace_id, embedding, k, min)` is `security invoker` (RLS applies) with the workspace filter in the WHERE clause. No HNSW index yet: exact search is correct at this size, and filtered HNSW can under-return.
+- **"I don't know":** two layers. (1) A similarity gate: best < `RAG_MIN_SIMILARITY` (0.60) means refuse with no LLM call. Calibrated: answerable questions 0.69–0.78, off-topic 0.50–0.57. (2) The prompt requires the exact `NO_ANSWER` sentence for near-topic questions the gate can't catch (e.g. "parental leave" vs a leave policy scored 0.64).
+- **Prompt injection:** sources go in numbered `<source>` blocks, and document text that could close or forge the delimiters is neutralised (`escapeSourceText`). The system prompt says source text is data. Answers render through react-markdown (no raw HTML). Tools, when added, must still be safe even if the model is fooled.
+- **Models:** `GEMINI_CHAT_MODELS` is tried in order. One retry on 429/5xx/timeout, and a 404 skips to the next model (pinned old models get retired). 20s per call, 45s total budget (Vercel `maxDuration = 60`). `thinkingLevel: LOW`, temperature 0.2.
+- **Reliability:** the question and a `pending` answer row are saved before any AI call. Failures set `status = 'error'` with a friendly message, and the UI shows Retry. A `pending` row older than 90s is shown as interrupted and is retryable.
+- **Chat privacy:** each user's thread is private (RLS: own `user_id`), even within a shared org workspace.
+- **Gotcha:** pdf.js detaches the ArrayBuffer it receives. Always pass `bytes.slice()`.
 
 ## Conventions
 
@@ -97,9 +120,9 @@ Logos: `public/brand/dossify-icon.png` (mark) and `public/brand/dossify-logo.png
 
 - [x] Auth: email + Google, personal vs organization accounts, onboarding, workspace switcher, app shell
 - [ ] Invitations for organization accounts (email invite → accept flow)
-- [ ] Document upload + ingestion (parse → chunk → embed → pgvector, idempotent by content hash)
-- [ ] Workspace-scoped RAG chat with citations and "I don't know"
+- [x] Document upload + ingestion (parse → chunk → embed → pgvector, idempotent by content hash)
+- [x] Workspace-scoped RAG chat with citations and "I don't know"
 - [ ] Tool calling (`save_task`, `list_tasks`, `send_summary` via Discord webhook) + tool-call log
-- [ ] Dashboard data (documents, chat history, tool logs)
+- [ ] Dashboard data (documents ✓, chat history ✓, tool logs)
 - [ ] Stretch: streaming, retrieval debug view, hybrid search, observability
 - [ ] Seed script, README test instructions, AI_NOTES.md

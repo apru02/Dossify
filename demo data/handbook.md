@@ -1,0 +1,1 @@
+Full-time employees get 24 days of paid leave per year. Up to 5 unused days carry over into January. Meals are reimbursed up to $50/day when travelling.

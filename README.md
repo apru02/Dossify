@@ -11,6 +11,17 @@ Two kinds of accounts:
 
 > Status: accounts, workspaces, team invitations, document ingestion, grounded streaming chat with citations, chat sessions and tool calling (tasks + per-workspace Slack) are done (see [CLAUDE.md](CLAUDE.md) → Status).
 
+## Test account
+
+A throwaway demo account for reviewers:
+
+| | |
+|---|---|
+| Email | `dev.begings@gmail.com` |
+| Password | `demo123456` |
+
+Log in with **email and password** (not "Continue with Google"). Please don't change the password, so others can use it too. The sample documents are in [`demo data/`](demo%20data/).
+
 ## Tech stack
 
 Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · Supabase (Auth, Postgres, RLS, pgvector) · Gemini · Zod · Vercel
